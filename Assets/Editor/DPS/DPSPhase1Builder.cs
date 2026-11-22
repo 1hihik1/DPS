@@ -22,6 +22,13 @@ namespace DPS.EditorTools
         const float RoadHalfWidth = 1.8f;
         const float RoadLength = 80f;
         const float BoothX = -2.8f;
+        const float BoothSize = 2.5f;
+        const float BoothHalf = BoothSize * 0.5f;
+
+        // Inspection zone the player may walk/teleport in: the booth plus the road
+        // strip around the stop line, so they can reach the driver window and trunk.
+        const float ZoneMinZ = -4f;
+        const float ZoneMaxZ = 3f;
 
         [MenuItem("DPS/Phase 1 - Build Environment")]
         public static void BuildFromMenu()
@@ -41,6 +48,7 @@ namespace DPS.EditorTools
             BuildBarrier(world);
             BuildStreetLamp(world);
             BuildRain(world);
+            BuildInspectionZone(world);
             ApplyLighting();
             PlaceXrOrigin();
             EnsureInteractionManager();
@@ -281,9 +289,11 @@ namespace DPS.EditorTools
             Box("Curb_Left", v, new Vector3(-RoadHalfWidth - 0.05f, -0.02f, 0f), new Vector3(0.1f, 0.14f, RoadLength), M("Concrete"));
             Box("Curb_Right", v, new Vector3(RoadHalfWidth + 0.05f, -0.02f, 0f), new Vector3(0.1f, 0.14f, RoadLength), M("Concrete"));
 
-            // Shoulders.
-            Box("Shoulder_Left", v, new Vector3(-RoadHalfWidth - 1.3f, -0.06f, 0f), new Vector3(2.4f, 0.08f, RoadLength), M("Ground"));
-            Box("Shoulder_Right", v, new Vector3(RoadHalfWidth + 1.3f, -0.06f, 0f), new Vector3(2.4f, 0.08f, RoadLength), M("Ground"));
+            // Shoulders. Colliders are required: the inspection zone lets the player walk and
+            // teleport here, so every surface inside it must actually support them.
+            // Centres are chosen so the shoulder edge abuts the road edge with no gap.
+            Box("Shoulder_Left", v, new Vector3(-RoadHalfWidth - 1.2f, -0.06f, 0f), new Vector3(2.4f, 0.08f, RoadLength), M("Ground"), true);
+            Box("Shoulder_Right", v, new Vector3(RoadHalfWidth + 1.2f, -0.06f, 0f), new Vector3(2.4f, 0.08f, RoadLength), M("Ground"), true);
 
             // Stop line at Z = 0.
             Box("StopLine", v, new Vector3(0f, 0.011f, 0f), new Vector3(RoadHalfWidth * 2f, 0.02f, 0.35f), M("RoadPaint"));
@@ -319,17 +329,15 @@ namespace DPS.EditorTools
             var v = Visuals(root);
 
             // Top face flush with the road surface so the CharacterController never steps up.
-            Box("Base", v, new Vector3(0f, -0.01f, 0f), new Vector3(2f, 0.02f, 2f), M("Concrete"), true);
-            Box("BackWall", v, new Vector3(-0.95f, 1.2f, 0f), new Vector3(0.1f, 2.4f, 2f), M("BoothMetal"), true);
-            Box("SideWall_A", v, new Vector3(0f, 1.2f, -0.95f), new Vector3(2f, 2.4f, 0.1f), M("BoothMetal"), true);
-            Box("SideWall_B", v, new Vector3(0f, 1.2f, 0.95f), new Vector3(2f, 2.4f, 0.1f), M("BoothMetal"), true);
-            Box("Roof", v, new Vector3(0f, 2.42f, 0f), new Vector3(2.2f, 0.12f, 2.2f), M("BoothMetal"), true);
+            Box("Base", v, new Vector3(0f, -0.01f, 0f), new Vector3(BoothSize, 0.02f, BoothSize), M("Concrete"), true);
 
-            // Serving hatch: solid below the desk, glass above waist height.
-            Box("FrontLower", v, new Vector3(1f, 0.45f, 0f), new Vector3(0.1f, 0.9f, 2f), M("BoothMetal"), true);
-            Box("FrontGlass", v, new Vector3(1f, 2.0f, 0f), new Vector3(0.08f, 0.8f, 2f), M("BoothGlass"), true);
-            Box("FrontPost_A", v, new Vector3(1f, 1.6f, -0.95f), new Vector3(0.1f, 0.8f, 0.1f), M("BoothMetal"));
-            Box("FrontPost_B", v, new Vector3(1f, 1.6f, 0.95f), new Vector3(0.1f, 0.8f, 0.1f), M("BoothMetal"));
+            // Back and one side are enclosed. The front is completely open (no wall, no glass,
+            // no posts) and the +Z side has a doorway, so the player can walk straight out to
+            // the stopped car without climbing over or squeezing past anything.
+            Box("BackWall", v, new Vector3(-1.20f, 1.2f, 0f), new Vector3(0.1f, 2.4f, BoothSize), M("BoothMetal"), true);
+            Box("SideWall_Closed", v, new Vector3(0f, 1.2f, -1.20f), new Vector3(BoothSize, 2.4f, 0.1f), M("BoothMetal"), true);
+            Box("SideWall_Doorway", v, new Vector3(-0.55f, 1.2f, 1.20f), new Vector3(1.4f, 2.4f, 0.1f), M("BoothMetal"), true);
+            Box("Roof", v, new Vector3(0f, 2.42f, 0f), new Vector3(2.7f, 0.12f, 2.7f), M("BoothMetal"), true);
 
             // Ceiling light fixture.
             Box("LampFixture", v, new Vector3(0f, 2.34f, 0f), new Vector3(0.6f, 0.03f, 0.6f), M("EmissiveWarm"));
@@ -346,13 +354,44 @@ namespace DPS.EditorTools
 
         static void BuildDesk(Transform booth)
         {
-            // Desk sits at the serving hatch, waist height for VR reach.
-            var desk = Group("Desk", booth, new Vector3(0.72f, 0f, 0f));
+            // Desk runs along the open front but stops short of the +Z doorway, leaving a
+            // clear walking lane out of the booth toward the driver window.
+            var desk = Group("Desk", booth, new Vector3(0.5f, 0f, -0.325f));
             var v = Visuals(desk);
 
-            Box("DeskTop", v, new Vector3(0f, 0.85f, 0f), new Vector3(0.55f, 0.06f, 1.7f), M("DeskWood"), true);
-            Box("DeskCabinet", v, new Vector3(-0.02f, 0.42f, 0f), new Vector3(0.46f, 0.78f, 1.6f), M("BoothMetal"), true);
-            Box("DeskKick", v, new Vector3(0f, 0.03f, 0f), new Vector3(0.5f, 0.06f, 1.65f), M("Rubber"));
+            Box("DeskTop", v, new Vector3(0f, 0.85f, 0f), new Vector3(0.55f, 0.06f, 1.35f), M("DeskWood"), true);
+            Box("DeskCabinet", v, new Vector3(-0.02f, 0.42f, 0f), new Vector3(0.46f, 0.78f, 1.25f), M("BoothMetal"), true);
+            Box("DeskKick", v, new Vector3(0f, 0.03f, 0f), new Vector3(0.5f, 0.06f, 1.3f), M("Rubber"));
+        }
+
+        /// <summary>
+        /// Teleport/locomotion surface covering the booth plus the road strip around the stop
+        /// line. Trigger-only, so it never collides with the CharacterController, and its top
+        /// face sits a hair above the road so teleport rays hit it instead of the asphalt.
+        /// </summary>
+        static void BuildInspectionZone(Transform world)
+        {
+            var root = Group("InspectionZone", world, new Vector3(0f, 0f, 0f));
+
+            var minX = BoothX - BoothHalf;
+            var maxX = RoadHalfWidth;
+            var width = maxX - minX;
+            var depth = ZoneMaxZ - ZoneMinZ;
+
+            var zone = root.gameObject;
+            zone.transform.localPosition = new Vector3(minX + width * 0.5f, 0.0025f, ZoneMinZ + depth * 0.5f);
+
+            var box = zone.AddComponent<BoxCollider>();
+            box.size = new Vector3(width, 0.005f, depth);
+            box.center = Vector3.zero;
+            box.isTrigger = true;
+
+            var area = zone.AddComponent<UnityEngine.XR.Interaction.Toolkit.Locomotion.Teleportation.TeleportationArea>();
+            area.interactionLayers = -1;
+
+            // Teleport rays ignore triggers by default, which would make this area unusable.
+            foreach (var ray in Object.FindObjectsByType<UnityEngine.XR.Interaction.Toolkit.Interactors.XRRayInteractor>(FindObjectsSortMode.None))
+                ray.raycastTriggerInteraction = QueryTriggerInteraction.Collide;
         }
 
         // --------------------------------------------------------------- barrier
@@ -463,7 +502,7 @@ namespace DPS.EditorTools
             SpotLight("StreetLampLight", lamp, new Vector3(-2.05f, 6.15f, 0f),
                 new Color(0.58f, 0.72f, 1f), 7f, 18f, 80f);
 
-            // 3. Police beacon (off until an arrest triggers it).
+            // Police beacon sits over the roof centre.
             PointLight("BeaconLight", booth, new Vector3(0f, 2.85f, 0f),
                 new Color(1f, 0.1f, 0.08f), 0f, 9f);
 
@@ -550,24 +589,24 @@ namespace DPS.EditorTools
 
         static void RelocateTeleportArea()
         {
-            // Keep teleport locomotion usable inside the booth's physical play area.
+            // The template's own "Teleport Area" object carries no collider (the Floor supplied
+            // the surface), so it is left parked out of the play zone. Teleporting is handled by
+            // the InspectionZone TeleportationArea built above.
             var area = FindPath("Teleport Area Setup/Teleport Area");
-            if (area == null)
+            if (area != null)
+                area.gameObject.SetActive(false);
+
+            // Keep the template's anchor as the default landing spot inside the booth, and make
+            // sure it does not sit on a trigger the teleport ray would hit first.
+            var anchor = FindPath("Teleport Area Setup/Teleport Anchor");
+            if (anchor == null)
                 return;
 
-            area.position = new Vector3(BoothX, 0.03f, 0f);
-            area.rotation = Quaternion.identity;
+            anchor.position = new Vector3(BoothX, 0.03f, 0f);
+            anchor.rotation = Quaternion.identity;
 
-            // In the template this object has no collider of its own - the Floor supplied the
-            // teleport surface. The Highway/Asphalt collider replaces that, so adding one here
-            // would only create a lip the CharacterController has to climb.
-            var existing = area.GetComponent<Collider>();
-            if (existing != null)
-                Object.DestroyImmediate(existing);
-
-            var anchor = FindPath("Teleport Area Setup/Teleport Anchor");
-            if (anchor != null)
-                anchor.position = new Vector3(BoothX, 0f, 0f);
+            foreach (var col in anchor.GetComponentsInChildren<Collider>(true))
+                col.enabled = false;
         }
     }
 }
