@@ -440,7 +440,9 @@ namespace DPS.EditorTools
             var main = ps.main;
             main.loop = true;
             main.duration = 1f;
-            main.startLifetime = 0.9f;
+            // Fall time from 8 m at 16 m/s with 0.25 gravity is ~0.48 s. A longer lifetime only
+            // keeps drops alive under the asphalt and wastes the 150-particle budget.
+            main.startLifetime = 0.5f;
             main.startSpeed = 16f;
             main.startSize = 0.015f;
             main.startColor = new Color(0.62f, 0.72f, 0.92f, 0.45f);
@@ -449,16 +451,22 @@ namespace DPS.EditorTools
             main.gravityModifier = 0.25f;
 
             var emission = ps.emission;
-            emission.rateOverTime = 160f;
+            emission.rateOverTime = 280f; // ~140 alive at 0.5 s, under the 150 cap
 
             var shape = ps.shape;
             shape.enabled = true;
             shape.shapeType = ParticleSystemShapeType.Box;
-            // Offset outward in +X so rain never spawns above the booth roof,
-            // otherwise streaks visibly fall through the ceiling into the interior.
-            shape.position = new Vector3(5f, 0f, 0f);
-            shape.scale = new Vector3(12f, 0.1f, 24f);
+            // The 90 deg X rotation points emission straight down, and it also remaps the box
+            // axes: local X -> world X, local Y -> world Z (road length), local Z -> world -Y
+            // (thickness). Scale must be given in that local frame.
+            // World X: -1.35..+6.5, just clear of the booth roof edge (-1.45), so streaks never
+            // fall through the ceiling. World Z: -15..+15.
+            const float rainMinX = -1.35f;
+            const float rainMaxX = 6.5f;
+            const float rainLength = 30f;
+            shape.position = new Vector3((rainMinX + rainMaxX) * 0.5f, 0f, 0f);
             shape.rotation = new Vector3(90f, 0f, 0f);
+            shape.scale = new Vector3(rainMaxX - rainMinX, rainLength, 0.5f);
 
             var collision = ps.collision;
             collision.enabled = false; // no particle collisions on Quest

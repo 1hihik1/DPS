@@ -34,6 +34,7 @@ namespace DPS
         Quaternion m_ClosedRotation;
         Coroutine m_Anim;
         bool m_IsOpen;
+        XRSimpleInteractable m_Interactable;
 
         /// <summary>True once the lid has finished opening.</summary>
         public bool IsOpen => m_IsOpen;
@@ -56,6 +57,22 @@ namespace DPS
 
             audioSource.playOnAwake = false;
             audioSource.spatialBlend = 1f;
+
+            // Optional ray/grip path for controller players who cannot reach the handle.
+            m_Interactable = GetComponent<XRSimpleInteractable>();
+            if (m_Interactable != null)
+                m_Interactable.selectEntered.AddListener(OnSelected);
+        }
+
+        void OnDestroy()
+        {
+            if (m_Interactable != null)
+                m_Interactable.selectEntered.RemoveListener(OnSelected);
+        }
+
+        void OnSelected(UnityEngine.XR.Interaction.Toolkit.SelectEnterEventArgs args)
+        {
+            Open();
         }
 
         void Update()

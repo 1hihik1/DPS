@@ -22,11 +22,14 @@ namespace DPS
 
         Rigidbody m_Body;
         bool m_Consumed;
+        int m_DropFrame = -1;
 
         public int Amount => amount;
 
         /// <summary>False once banked, so the box and its scanner both ignore it.</summary>
         public bool CanBeCollected => !m_Consumed;
+
+        public bool IsHeld => grabInteractable != null && grabInteractable.isSelected;
 
         void Awake()
         {
@@ -47,13 +50,44 @@ namespace DPS
             GrabTuning.MakeHoldable(grabInteractable, m_Body);
 
             if (grabInteractable != null)
+            {
                 grabInteractable.selectEntered.AddListener(OnGrabbed);
+                grabInteractable.selectExited.AddListener(OnReleased);
+            }
         }
 
         void OnDestroy()
         {
-            if (grabInteractable != null)
-                grabInteractable.selectEntered.RemoveListener(OnGrabbed);
+            if (grabInteractable == null)
+                return;
+
+            grabInteractable.selectEntered.RemoveListener(OnGrabbed);
+            grabInteractable.selectExited.RemoveListener(OnReleased);
+        }
+
+        // The bundle hangs kinematic in the driver's hand until taken. XRGrabInteractable restores
+        // that kinematic flag in its late-phase Detach, after this event, so the switch to physics
+        // is deferred to the next frame or it would be overwritten and the cash would freeze mid-air.
+        void OnReleased(UnityEngine.XR.Interaction.Toolkit.SelectExitEventArgs args)
+        {
+            if (m_Body == null || m_Consumed)
+                return;
+
+            m_DropFrame = Time.frameCount;
+        }
+
+        void Update()
+        {
+            if (m_DropFrame < 0 || Time.frameCount <= m_DropFrame)
+                return;
+
+            m_DropFrame = -1;
+
+            if (m_Consumed || IsHeld || m_Body == null)
+                return;
+
+            m_Body.isKinematic = false;
+            m_Body.useGravity = true;
         }
 
         void OnGrabbed(UnityEngine.XR.Interaction.Toolkit.SelectEnterEventArgs args)

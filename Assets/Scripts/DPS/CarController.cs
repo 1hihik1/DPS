@@ -40,6 +40,13 @@ namespace DPS
         [SerializeField] Transform visuals;
 
         [SerializeField] Renderer bodyRenderer;
+
+        [Tooltip("Extra panels (trunk walls, lid) tinted with the body colour.")]
+        [SerializeField] Renderer[] bodyPanels;
+
+        [Tooltip("Any further renderers (e.g. the trunk lid) tinted together with the body.")]
+        [SerializeField] Renderer[] extraBodyRenderers;
+
         [SerializeField] Transform driverWindow;
         [SerializeField] Vector3 windowClosedLocalPos;
         [SerializeField] Vector3 windowOpenLocalPos;
@@ -65,6 +72,11 @@ namespace DPS
 
         [SerializeField] TrunkInteractable trunk;
 
+        [Tooltip("Contraband cargo in the trunk, shown only for smuggling cars.")]
+        [SerializeField] GameObject contrabandRoot;
+
+        [SerializeField] TMP_Text contrabandText;
+
         [Header("Lights")]
         [Tooltip("Headlights, which are kept shadowless for Quest.")]
         [SerializeField] Light[] headlights;
@@ -89,6 +101,7 @@ namespace DPS
         bool m_BribeTaken;
         bool m_InspectionDone;
         bool m_WindowOpen;
+        CashBundle m_Cash;
 
         public CarData Data { get; private set; }
         public CarState State => m_State;
@@ -194,7 +207,31 @@ namespace DPS
                 block.SetColor("_BaseColor", Data.bodyColor);
                 block.SetColor("_Color", Data.bodyColor);
                 bodyRenderer.SetPropertyBlock(block);
+
+                if (bodyPanels != null)
+                {
+                    foreach (var panel in bodyPanels)
+                    {
+                        if (panel != null)
+                            panel.SetPropertyBlock(block);
+                    }
+                }
+
+                if (extraBodyRenderers != null)
+                {
+                    foreach (var extra in extraBodyRenderers)
+                    {
+                        if (extra != null)
+                            extra.SetPropertyBlock(block);
+                    }
+                }
             }
+
+            if (contrabandRoot != null)
+                contrabandRoot.SetActive(Data.hasContraband);
+
+            if (contrabandText != null)
+                contrabandText.text = Data.contrabandLabel;
 
             if (dialogueText != null)
             {
@@ -370,6 +407,31 @@ namespace DPS
             var bundle = Instantiate(cashPrefab, cashSpawn.position, cashSpawn.rotation);
             bundle.Configure(5000);
             bundle.name = "CashBundle";
+            m_Cash = bundle;
+        }
+
+        /// <summary>An offer nobody banked leaves with the driver instead of hanging in the air.</summary>
+        void RetractBribe()
+        {
+            // Consume also cancels any hand still holding it, so a stale bundle can never be
+            // credited to the next car.
+            if (m_Cash != null && m_Cash.CanBeCollected)
+                m_Cash.Consume();
+
+            m_Cash = null;
+        }
+
+        void ClearCargo()
+        {
+            var spawner = GetComponent<TrunkCargoSpawner>();
+            if (spawner != null)
+                spawner.Clear();
+        }
+
+        void OnDestroy()
+        {
+            RetractBribe();
+            ClearCargo();
         }
 
         /// <summary>Called by the bribe box when this car's money is banked.</summary>
@@ -396,6 +458,8 @@ namespace DPS
                 return;
 
             HideBubble();
+            RetractBribe();
+            ClearCargo();
 
             if (trunk != null && trunk.IsOpen)
                 trunk.Close();
@@ -411,6 +475,8 @@ namespace DPS
         public void Impound()
         {
             m_State = CarState.Done;
+            RetractBribe();
+            ClearCargo();
 
             if (audioSource != null)
                 audioSource.Stop();

@@ -39,9 +39,22 @@ namespace DPS
         [Tooltip("Hands only press when they actually enter the collider.")]
         [SerializeField] LayerMask handLayers = ~0;
 
+        [Tooltip("The rig has no hand colliders, so a hand entering the trigger bounds is detected by distance.")]
+        [SerializeField] bool useHandProximity = true;
+
+        [SerializeField] float handPadding = 0.01f;
+
+        [Tooltip("Hand within this distance of the cap (or button) centre presses it. 0 disables.")]
+        [SerializeField] float pressRadius = 0.07f;
+
+        [Tooltip("Hand must move further than pressRadius * this factor away before the button re-arms.")]
+        [SerializeField] float rearmFactor = 1.6f;
+
         float m_LastPressTime = float.NegativeInfinity;
         Vector3 m_CapHome;
         bool m_Animating;
+        bool m_HandWasInside;
+        Collider m_Collider;
         XRSimpleInteractable m_Interactable;
 
         public ButtonKind Kind => kind;
@@ -63,10 +76,12 @@ namespace DPS
             if (cap != null)
                 m_CapHome = cap.localPosition;
 
-            var col = GetComponent<Collider>();
-            col.isTrigger = true;
+            m_Collider = GetComponent<Collider>();
+            m_Collider.isTrigger = true;
 
             m_Interactable = GetComponent<XRSimpleInteractable>();
+            if (m_Interactable == null)
+                m_Interactable = GetComponentInChildren<XRSimpleInteractable>(true);
             if (m_Interactable != null)
                 m_Interactable.selectEntered.AddListener(OnSelected);
 
@@ -84,8 +99,39 @@ namespace DPS
             TryPress();
         }
 
+        void Update()
+        {
+            if (!useHandProximity || m_Collider == null)
+                return;
+
+            // Edge-triggered so a hand resting on the cap presses once, not every cooldown.
+            // The cap position is sampled at its home pose so the press animation cannot re-arm it.
+            var centre = cap != null && cap.parent != null ? cap.parent.TransformPoint(m_CapHome)
+                       : cap != null ? cap.position : m_Collider.bounds.center;
+
+            bool inside;
+            if (pressRadius > 0f)
+            {
+                var distance = HandProximity.DistanceToNearestHand(centre);
+                inside = m_HandWasInside ? distance <= pressRadius * rearmFactor : distance <= pressRadius;
+                inside |= HandProximity.IsHandInside(m_Collider.bounds, handPadding);
+            }
+            else
+            {
+                inside = HandProximity.IsHandInside(m_Collider.bounds, handPadding);
+            }
+
+            if (inside && !m_HandWasInside)
+                TryPress();
+
+            m_HandWasInside = inside;
+        }
+
         void OnTriggerEnter(Collider other)
         {
+            if (other.GetComponentInParent<XRGrabInteractable>() != null)
+                return;
+
             if ((handLayers.value & (1 << other.gameObject.layer)) == 0)
                 return;
 

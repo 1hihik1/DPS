@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using TMPro;
+using UnityEngine.Serialization;
 
 namespace DPS
 {
@@ -12,9 +13,11 @@ namespace DPS
         public int carsCorrect;
         public int carsWrong;
         public int cleanReleased;
+        public int carsDetained;
         public int violatorsReleased;
         public int innocentDetained;
         public int bribesTaken;
+        public int bribeMoney;
         public int money;
         public float seconds;
 
@@ -46,6 +49,10 @@ namespace DPS
         [SerializeField] float spawnYaw = 0f;
 
         [Header("Shift")]
+        [Tooltip("Start immediately on Play. Off when a start board drives BeginShift.")]
+        [FormerlySerializedAs("autoStart")]
+        [SerializeField] bool autoStartOnPlay = false;
+
         [SerializeField, Min(1)] int carsPerShift = 5;
         [SerializeField, Min(10f)] float shiftSeconds = 240f;
         [SerializeField] int seed;
@@ -72,7 +79,18 @@ namespace DPS
         [SerializeField] Transform barrierArm;
 
         [SerializeField] float barrierOpenAngle = -78f;
+
+        [Tooltip("Local hinge axis. The Phase 1 arm extends along -X, so it lifts around Z.")]
+        [SerializeField] Vector3 barrierOpenAxis = Vector3.forward;
         [SerializeField] float barrierDuration = 0.7f;
+
+        [Header("Beacon")]
+        [Tooltip("Roof beacon light. Off while idle, flashes red/blue briefly on a detain.")]
+        [SerializeField] Light beaconLight;
+
+        [SerializeField] float beaconFlashSeconds = 3f;
+        [SerializeField] float beaconPeriod = 0.18f;
+        [SerializeField] float beaconIntensity = 3f;
 
         [Header("UI")]
         [Tooltip("Wanted board - shows the plate and crime to look out for.")]
@@ -82,6 +100,9 @@ namespace DPS
 
         [Tooltip("Desk HUD: cars remaining, timer, money.")]
         [SerializeField] TMP_Text statusText;
+
+        [Tooltip("Start panel, hidden once a shift begins.")]
+        [SerializeField] GameObject startRoot;
 
         [Tooltip("Root of the shift summary panel.")]
         [SerializeField] GameObject summaryRoot;
@@ -103,7 +124,11 @@ namespace DPS
         int m_ViolatorsReleased;
         int m_InnocentDetained;
         int m_Bribes;
+        int m_BribeMoney;
+        int m_Detained;
         int m_Money;
+        Coroutine m_BeaconRoutine;
+        int m_Releasing;
         float m_ShiftStart;
         float m_NextSpawnTime;
         bool m_Running;
@@ -137,6 +162,8 @@ namespace DPS
 
             if (summaryRoot != null)
                 summaryRoot.SetActive(false);
+
+            SetBeacon(false);
         }
 
         void OnDestroy()
@@ -149,7 +176,10 @@ namespace DPS
 
         void Start()
         {
-            BeginShift();
+            if (autoStartOnPlay)
+                BeginShift();
+            else if (startRoot != null)
+                startRoot.SetActive(true);
         }
 
         // ------------------------------------------------------------ shift setup
@@ -175,6 +205,8 @@ namespace DPS
             m_ViolatorsReleased = 0;
             m_InnocentDetained = 0;
             m_Bribes = 0;
+            m_BribeMoney = 0;
+            m_Detained = 0;
             m_Money = 0;
             m_SummaryShown = false;
             m_Running = true;
@@ -186,6 +218,9 @@ namespace DPS
 
             if (summaryRoot != null)
                 summaryRoot.SetActive(false);
+
+            if (startRoot != null)
+                startRoot.SetActive(false);
 
             Subscribe();
             UpdateWantedBoard();
@@ -263,8 +298,10 @@ namespace DPS
                 m_Spawned++;
             }
 
-            // All cars out; the shift ends once the last one is resolved.
-            while (m_Running && ActiveCar != null)
+            // All cars out; the shift ends once the last one is resolved and has left the booth,
+            // otherwise EndShift's StopAllCoroutines would kill the beacon flash or strand a
+            // released car behind a reset barrier.
+            while (m_Running && (ActiveCar != null || m_BeaconRoutine != null || m_Releasing > 0))
                 yield return null;
 
             if (m_Running)
@@ -327,7 +364,9 @@ namespace DPS
                 return;
 
             m_Bribes++;
-            m_Money += amount > 0 ? amount : bribeValue;
+            var value = amount > 0 ? amount : bribeValue;
+            m_BribeMoney += value;
+            m_Money += value;
             ActiveCar.MarkBribeTaken();
 
             SimpleAudioSynth.Play(audioSource, cashClip, SynthSound.Cash, 0.8f);
@@ -389,6 +428,8 @@ namespace DPS
                 // Detained cars are impounded behind the barrier, so give the player the siren
                 // cue and let it drive off camera rather than blinking out of existence.
                 SimpleAudioSynth.Play(audioSource, sirenClip, SynthSound.Siren, 0.7f);
+                m_Detained++;
+                FlashBeacon();
                 car.Impound();
             }
 
@@ -401,6 +442,7 @@ namespace DPS
 
         IEnumerator ReleaseWithBarrier(CarController car)
         {
+            m_Releasing++;
             yield return RaiseBarrier(open: true);
 
             if (car != null)
@@ -414,6 +456,7 @@ namespace DPS
             }
 
             yield return RaiseBarrier(open: false);
+            m_Releasing--;
         }
 
         IEnumerator RaiseBarrier(bool open)
@@ -421,7 +464,7 @@ namespace DPS
             if (barrierArm == null)
                 yield break;
 
-            var target = open ? m_BarrierHome * Quaternion.Euler(barrierOpenAngle, 0f, 0f) : m_BarrierHome;
+            var target = open ? m_BarrierHome * Quaternion.AngleAxis(barrierOpenAngle, barrierOpenAxis) : m_BarrierHome;
             var start = barrierArm.localRotation;
             var t = 0f;
 
@@ -472,6 +515,9 @@ namespace DPS
             m_Running = false;
             m_SummaryShown = true;
             StopAllCoroutines();
+            m_BeaconRoutine = null;
+            m_Releasing = 0;
+            SetBeacon(false);
 
             if (ActiveCar != null)
             {
@@ -488,9 +534,11 @@ namespace DPS
                 carsCorrect = m_Correct,
                 carsWrong = m_Wrong,
                 cleanReleased = m_CleanReleased,
+                carsDetained = m_Detained,
                 violatorsReleased = m_ViolatorsReleased,
                 innocentDetained = m_InnocentDetained,
                 bribesTaken = m_Bribes,
+                bribeMoney = m_BribeMoney,
                 money = m_Money,
                 seconds = Time.time - m_ShiftStart,
             };
@@ -500,6 +548,9 @@ namespace DPS
 
             if (summaryText != null)
                 summaryText.text = FormatSummary(result);
+
+            if (startRoot != null)
+                startRoot.SetActive(false);
 
             if (wantedPlateText != null)
                 wantedPlateText.text = "\u0421\u041C\u0415\u041D\u0410 \u0417\u0410\u041A\u041E\u041D\u0427\u0415\u041D\u0410";
@@ -511,54 +562,65 @@ namespace DPS
                 breathalyzer.ResetDisplay();
         }
 
+        /// <summary>Plain ASCII thousands separator: TMP fonts often lack the NBSP that "N0" emits.</summary>
+        static string FormatRub(int value)
+        {
+            var s = Mathf.Abs(value).ToString("#,0", System.Globalization.CultureInfo.InvariantCulture).Replace(',', ' ');
+            return value < 0 ? "-" + s : s;
+        }
+
         /// <summary>Russian shift report, also used by the Phase 3 summary board.</summary>
         public static string FormatSummary(ShiftResult result)
         {
             var minutes = Mathf.FloorToInt(result.seconds / 60f);
             var seconds = Mathf.FloorToInt(result.seconds % 60f);
 
-            var sb = new System.Text.StringBuilder(256);
-            sb.AppendLine("\u0418\u0422\u041E\u0413\u0418 \u0421\u041C\u0415\u041D\u042B");
+            var sb = new System.Text.StringBuilder(320);
+            sb.AppendLine("ИТОГИ СМЕНЫ");
             sb.AppendLine();
-            sb.Append("\u041E\u0441\u043C\u043E\u0442\u0440\u0435\u043D\u043E \u043C\u0430\u0448\u0438\u043D: ").AppendLine(result.carsHandled.ToString());
-            sb.Append("\u0412\u0435\u0440\u043D\u044B\u0445 \u0440\u0435\u0448\u0435\u043D\u0438\u0439: ").Append(result.carsCorrect).Append("  (")
-              .Append(result.AccuracyPercent).AppendLine("%)");
-            sb.Append("\u041E\u0448\u0438\u0431\u043E\u043A: ").AppendLine(result.carsWrong.ToString());
+            sb.Append("Осмотрено машин: ").AppendLine(result.carsHandled.ToString());
+            sb.Append("Задержано: ").AppendLine(result.carsDetained.ToString());
+            sb.Append("Верных решений: ").Append(result.carsCorrect).Append(" (").Append(result.AccuracyPercent).AppendLine("%)");
+            sb.Append("Ошибок: ").AppendLine(result.carsWrong.ToString());
+            sb.Append("  пропущено нарушителей: ").AppendLine(result.violatorsReleased.ToString());
+            sb.Append("  задержано невиновных: ").AppendLine(result.innocentDetained.ToString());
+            sb.Append("Взяток (₽): ").Append(result.bribesTaken).Append(" шт. / ").Append(FormatRub(result.bribeMoney)).AppendLine(" ₽");
+            sb.Append("Итого в кармане: ").Append(FormatRub(result.money)).AppendLine(" ₽");
+            sb.Append("Время: ").Append(minutes.ToString("00")).Append(":").AppendLine(seconds.ToString("00"));
             sb.AppendLine();
-            sb.Append("\u041F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E \u043D\u0430\u0440\u0443\u0448\u0438\u0442\u0435\u043B\u0435\u0439: ").AppendLine(result.violatorsReleased.ToString());
-            sb.Append("\u0417\u0430\u0434\u0435\u0440\u0436\u0430\u043D\u043E \u043D\u0435\u0432\u0438\u043D\u043E\u0432\u043D\u044B\u0445: ").AppendLine(result.innocentDetained.ToString());
-            sb.Append("\u0412\u0437\u044F\u0442\u043E \u0432\u0437\u044F\u0442\u043E\u043A: ").AppendLine(result.bribesTaken.ToString());
-            sb.AppendLine();
-            sb.Append("\u0414\u0415\u041D\u042C\u0413\u0418: ").Append(result.money.ToString("N0")).AppendLine(" \u20BD");
-            sb.Append("\u0412\u0440\u0435\u043C\u044F: ").Append(minutes.ToString("00")).Append(":").AppendLine(seconds.ToString("00"));
-
-            // Clean vs dirty shifts read differently, so the summary is a verdict rather than a
-            // bare scoreboard.
-            sb.AppendLine();
-            if (result.bribesTaken > 0)
-                sb.AppendLine("\u0421\u041C\u0415\u041D\u0410 \u041D\u0415\u0427\u0418\u0421\u0422\u0410\u042F");
-            else if (result.AccuracyPercent >= 80)
-                sb.AppendLine("\u0421\u041B\u0423\u0416\u0411\u0410 \u041E\u0422\u041B\u0418\u0427\u041D\u0410\u042F");
-            else if (result.AccuracyPercent >= 50)
-                sb.AppendLine("\u0421\u041B\u0423\u0416\u0411\u0410 \u0423\u0414\u041E\u0412\u041B\u0415\u0422\u0412\u041E\u0420\u0418\u0422\u0415\u041B\u042C\u041D\u0410\u042F");
-            else
-                sb.AppendLine("\u0421\u041B\u0423\u0416\u0411\u0410 \u041F\u0420\u041E\u0412\u0410\u041B\u0415\u041D\u0410");
-
+            sb.Append("ВЕРДИКТ: ").AppendLine(Verdict(result));
             return sb.ToString();
         }
+
+        /// <summary>Funny one-line verdict for the summary board.</summary>
+        public static string Verdict(ShiftResult result)
+        {
+            if (result.carsHandled == 0)
+                return "Проспал всю смену в будке. Чай остыл.";
+            if (result.bribesTaken >= 2)
+                return "Купил дачу. Служебное расследование уже едет.";
+            if (result.bribesTaken == 1)
+                return "Немного испачкал погоны. Начальство «не заметило».";
+            if (result.AccuracyPercent >= 100)
+                return "Гроза трассы! Портрет на доску почёта.";
+            if (result.AccuracyPercent >= 80)
+                return "Образцовый инспектор. Премия - банка огурцов.";
+            if (result.AccuracyPercent >= 50)
+                return "Сойдёт. Полосатая палочка вами довольна.";
+            return "Переведён регулировать движение у коровника.";
+        }
+
 
         // ------------------------------------------------------------------- UI
 
         void UpdateWantedBoard()
         {
             if (wantedPlateText != null)
-                wantedPlateText.text = string.IsNullOrEmpty(m_WantedPlate)
-                    ? "\u041E\u0420\u0418\u0415\u041D\u0422\u0418\u0420\u041E\u0412\u041A\u0418 \u041D\u0415\u0422"
-                    : m_WantedPlate;
+                wantedPlateText.text = string.IsNullOrEmpty(m_WantedPlate) ? "ОРИЕНТИРОВКИ НЕТ" : m_WantedPlate;
 
             if (wantedCrimeText != null)
             {
-                var crime = "\u041D\u0410\u0420\u0423\u0428\u0415\u041D\u0418\u0419 \u041D\u0415\u0422";
+                var crime = "НАРУШЕНИЙ НЕТ";
                 foreach (var car in m_Plan)
                 {
                     if (!car.isWanted)
@@ -579,21 +641,60 @@ namespace DPS
 
             var remaining = Mathf.Max(0f, shiftSeconds - (Time.time - m_ShiftStart));
             var remainingSeconds = Mathf.CeilToInt(remaining);
-            var cars = CarsRemaining;
+            var carNumber = Mathf.Clamp(m_Handled + 1, 1, carsPerShift);
 
             // Rebuilt only when a displayed value actually changes; this runs every frame
             // otherwise and string allocation is the expensive part on Quest.
-            if (remainingSeconds == m_LastStatusSeconds && cars == m_LastStatusCars && m_Money == m_LastStatusMoney)
+            if (remainingSeconds == m_LastStatusSeconds && carNumber == m_LastStatusCars && m_Money == m_LastStatusMoney)
                 return;
 
             m_LastStatusSeconds = remainingSeconds;
-            m_LastStatusCars = cars;
+            m_LastStatusCars = carNumber;
             m_LastStatusMoney = m_Money;
 
-            statusText.text = "\u041C\u0410\u0428\u0418\u041D: " + cars +
+            statusText.text = "Машина " + carNumber + "/" + carsPerShift +
                               "   " + (remainingSeconds / 60).ToString("00") + ":" +
                               (remainingSeconds % 60).ToString("00") +
-                              "   " + m_Money.ToString("N0") + " \u20BD";
+                              "   " + FormatRub(m_Money) + " ₽";
+        }
+
+        // --------------------------------------------------------------- beacon
+
+        void FlashBeacon()
+        {
+            if (beaconLight == null)
+                return;
+
+            if (m_BeaconRoutine != null)
+                StopCoroutine(m_BeaconRoutine);
+
+            m_BeaconRoutine = StartCoroutine(BeaconRoutine());
+        }
+
+        IEnumerator BeaconRoutine()
+        {
+            SetBeacon(true);
+            var t = 0f;
+            while (t < beaconFlashSeconds)
+            {
+                var red = Mathf.Repeat(t, beaconPeriod * 2f) < beaconPeriod;
+                beaconLight.color = red ? new Color(1f, 0.1f, 0.08f) : new Color(0.15f, 0.3f, 1f);
+                t += Time.deltaTime;
+                yield return null;
+            }
+
+            SetBeacon(false);
+            m_BeaconRoutine = null;
+        }
+
+        void SetBeacon(bool on)
+        {
+            if (beaconLight == null)
+                return;
+
+            beaconLight.shadows = LightShadows.None;
+            beaconLight.intensity = on ? beaconIntensity : 0f;
+            beaconLight.enabled = on;
         }
     }
 }
