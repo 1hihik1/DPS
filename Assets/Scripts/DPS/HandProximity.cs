@@ -34,7 +34,7 @@ namespace DPS
         {
             HandPoints.Clear();
 
-            var interactors = Object.FindObjectsByType<XRBaseInteractor>(FindObjectsSortMode.None);
+            var interactors = Object.FindObjectsByType<XRBaseInteractor>(FindObjectsInactive.Include, FindObjectsSortMode.None);
             foreach (var interactor in interactors)
             {
                 if (interactor == null)
@@ -107,7 +107,8 @@ namespace DPS
             for (var i = 0; i < HandPoints.Count; i++)
             {
                 var hand = HandPoints[i];
-                if (hand == null)
+                // Quest disables the inactive modality (hands vs controllers); its frozen pose must not press anything.
+                if (hand == null || !hand.gameObject.activeInHierarchy)
                     continue;
                 best = Mathf.Min(best, Vector3.Distance(worldPoint, hand.position));
             }
@@ -129,7 +130,7 @@ namespace DPS
             for (var i = 0; i < HandPoints.Count; i++)
             {
                 var hand = HandPoints[i];
-                if (hand == null)
+                if (hand == null || !hand.gameObject.activeInHierarchy)
                     continue;
 
                 if (bounds.SqrDistance(hand.position) <= padding * padding)
