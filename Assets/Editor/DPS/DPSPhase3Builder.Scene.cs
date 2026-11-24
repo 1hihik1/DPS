@@ -48,6 +48,8 @@ namespace DPS.EditorTools
             GameObject startRoot, summaryRoot;
             BuildStartBoard(ui, shift, out startRoot, out summaryRoot, out summary);
             BuildWantedBoard(ui, out plate, out crime, out status);
+            BuildBounds(root);
+            ConfigureXRBody();
 
             // Wiring.
             Set(shift, "carPrefab", carPrefab);
@@ -308,6 +310,59 @@ namespace DPS.EditorTools
             return box;
         }
 
+        // ------------------------------------------------------------- bounds
+
+        /// <summary>Invisible walls framing the InspectionZone so the player cannot leave the shoulders.</summary>
+        static void BuildBounds(Transform root)
+        {
+            const float minX = -4.05f, maxX = 1.85f, minZ = -4.0f, maxZ = 3.0f, h = 3f, t = 0.2f;
+            var bounds = Group("Bounds", root);
+            var cx = (minX + maxX) * 0.5f;
+            var cz = (minZ + maxZ) * 0.5f;
+            var w = maxX - minX + 2f * t;
+            var d = maxZ - minZ + 2f * t;
+
+            Wall(bounds, "Wall_West", new Vector3(minX - t * 0.5f, h * 0.5f, cz), new Vector3(t, h, d));
+            Wall(bounds, "Wall_East", new Vector3(maxX + t * 0.5f, h * 0.5f, cz), new Vector3(t, h, d));
+            Wall(bounds, "Wall_South", new Vector3(cx, h * 0.5f, minZ - t * 0.5f), new Vector3(w, h, t));
+            Wall(bounds, "Wall_North", new Vector3(cx, h * 0.5f, maxZ + t * 0.5f), new Vector3(w, h, t));
+        }
+
+        static void Wall(Transform parent, string name, Vector3 pos, Vector3 size)
+        {
+            var go = Group(name, parent, pos).gameObject;
+            go.layer = 2; // Ignore Raycast: never blocks teleport or UI rays, still blocks the body.
+            AddBox(go, Vector3.zero, size);
+        }
+
+        /// <summary>Capsule follows the HMD so the body collides with walls and the parked car.</summary>
+        static void ConfigureXRBody()
+        {
+            var origin = GameObject.Find("XR Origin Hands (XR Rig)");
+            if (origin == null)
+            {
+                Debug.LogWarning("[DPS Phase 3] XR Origin Hands (XR Rig) not found - body collision skipped.");
+                return;
+            }
+
+            var cc = origin.GetComponent<CharacterController>();
+            if (cc == null)
+                cc = origin.AddComponent<CharacterController>();
+            cc.radius = 0.25f;
+            cc.height = Mathf.Clamp(cc.height, 0.5f, 2.2f);
+            cc.center = new Vector3(cc.center.x, cc.height * 0.5f + cc.skinWidth, cc.center.z);
+
+            // XRI 3.x: XRBodyTransformer already fits the capsule to the HMD every frame; the
+            // deprecated CharacterControllerDriver would fight it, so only make sure it is used.
+            var body = origin.GetComponentInChildren<UnityEngine.XR.Interaction.Toolkit.Locomotion.XRBodyTransformer>(true);
+            if (body != null)
+                body.useCharacterControllerIfExists = true;
+            else
+                Debug.LogWarning("[DPS Phase 3] XRBodyTransformer not found - capsule will not follow the HMD.");
+
+            EditorUtility.SetDirty(origin);
+        }
+
         // ------------------------------------------------------------- boards
 
         static void BuildStartBoard(Transform parent, ShiftManager shift, out GameObject startRoot,
@@ -347,7 +402,7 @@ namespace DPS.EditorTools
 
         static void BuildWantedBoard(Transform parent, out TMP_Text plate, out TMP_Text crime, out TMP_Text status)
         {
-            var canvas = WorldCanvas("WantedBoard", parent, new Vector3(-1.65f, 1.95f, 0.45f),
+            var canvas = WorldCanvas("WantedBoard", parent, new Vector3(-1.65f, 2.2f, 0.45f),
                 Face(Vector3.left, Vector3.up), new Vector2(900f, 500f), false);
             var t = canvas.transform;
 

@@ -101,6 +101,9 @@ namespace DPS
         [Tooltip("Desk HUD: cars remaining, timer, money.")]
         [SerializeField] TMP_Text statusText;
 
+        [Tooltip("Seconds a hint (e.g. a missed car) stays on the status line.")]
+        [SerializeField] float hintSeconds = 3f;
+
         [Tooltip("Start panel, hidden once a shift begins.")]
         [SerializeField] GameObject startRoot;
 
@@ -138,11 +141,14 @@ namespace DPS
         int m_LastStatusSeconds = -1;
         int m_LastStatusCars = -1;
         int m_LastStatusMoney = int.MinValue;
+        float m_HintUntil;
 
         public CarController ActiveCar { get; private set; }
         public bool IsRunning => m_Running;
         public int CarsRemaining => Mathf.Max(0, carsPerShift - m_Handled);
         public int Money => m_Money;
+
+        Quaternion BarrierOpenRotation => m_BarrierHome * Quaternion.AngleAxis(barrierOpenAngle, barrierOpenAxis);
 
         void Awake()
         {
@@ -215,6 +221,13 @@ namespace DPS
             m_LastStatusSeconds = -1;
             m_LastStatusCars = -1;
             m_LastStatusMoney = int.MinValue;
+            m_HintUntil = 0f;
+            StopAllCoroutines();
+            m_BeaconRoutine = null;
+            m_Releasing = 0;
+
+            if (barrierArm != null)
+                barrierArm.localRotation = BarrierOpenRotation;
 
             if (summaryRoot != null)
                 summaryRoot.SetActive(false);
@@ -281,28 +294,38 @@ namespace DPS
 
         IEnumerator SpawnLoop()
         {
-            while (m_Running && m_Spawned < m_Plan.Count)
+            // Outer loop: a missed car re-queues its slot, possibly after the last spawn.
+            while (m_Running)
             {
-                var wait = m_NextSpawnTime - Time.time;
-                if (wait > 0f)
-                    yield return new WaitForSeconds(wait);
+                while (m_Running && m_Spawned < m_Plan.Count)
+                {
+                    var wait = m_NextSpawnTime - Time.time;
+                    if (wait > 0f)
+                        yield return new WaitForSeconds(wait);
 
-                // Never stack two cars: wait for the previous one to be cleared.
-                while (m_Running && ActiveCar != null)
+                    // Never stack two cars: wait for the previous one to be cleared.
+                    while (m_Running && ActiveCar != null)
+                        yield return null;
+
+                    if (!m_Running)
+                        yield break;
+
+                    if (m_Spawned >= m_Plan.Count)
+                        break;
+
+                    SpawnCar(m_Plan[m_Spawned]);
+                    m_Spawned++;
+                }
+
+                // All cars out; the shift ends once the last one is resolved and has left the booth,
+                // otherwise EndShift's StopAllCoroutines would kill the beacon flash or strand a
+                // released car.
+                while (m_Running && m_Spawned >= m_Plan.Count && (ActiveCar != null || m_BeaconRoutine != null || m_Releasing > 0))
                     yield return null;
 
-                if (!m_Running)
-                    yield break;
-
-                SpawnCar(m_Plan[m_Spawned]);
-                m_Spawned++;
+                if (m_Spawned >= m_Plan.Count)
+                    break;
             }
-
-            // All cars out; the shift ends once the last one is resolved and has left the booth,
-            // otherwise EndShift's StopAllCoroutines would kill the beacon flash or strand a
-            // released car behind a reset barrier.
-            while (m_Running && (ActiveCar != null || m_BeaconRoutine != null || m_Releasing > 0))
-                yield return null;
 
             if (m_Running)
                 EndShift();
@@ -329,6 +352,7 @@ namespace DPS
             car.name = "Car_" + data.plate;
 
             car.Arrived += OnCarArrived;
+            car.Missed += OnCarMissed;
             car.Initialise(data, pose);
 
             ActiveCar = car;
@@ -346,8 +370,33 @@ namespace DPS
 
         void OnBatonSignalled()
         {
-            if (ActiveCar != null)
-                ActiveCar.SignalToStop();
+            if (ActiveCar == null || !ActiveCar.SignalToStop())
+                return;
+
+            // The lane is blocked in front of the stopping car until the player decides.
+            StartCoroutine(RaiseBarrier(open: false));
+        }
+
+        void OnCarMissed(CarController car)
+        {
+            if (car != ActiveCar)
+                return;
+
+            car.Arrived -= OnCarArrived;
+            car.Missed -= OnCarMissed;
+            ActiveCar = null;
+
+            // Re-queue the same plan slot: an unchecked car never counts as handled.
+            m_Spawned = Mathf.Max(0, m_Spawned - 1);
+            m_NextSpawnTime = Time.time + spawnInterval;
+            ShowHint("Пропустили машину! Махните жезлом");
+        }
+
+        void ShowHint(string text)
+        {
+            m_HintUntil = Time.time + hintSeconds;
+            if (statusText != null)
+                statusText.text = text;
         }
 
         void OnButtonPressed(DeskButton.ButtonKind kind)
@@ -392,6 +441,7 @@ namespace DPS
 
             ActiveCar = null;
             car.Arrived -= OnCarArrived;
+            car.Missed -= OnCarMissed;
 
             m_Handled++;
 
@@ -431,6 +481,7 @@ namespace DPS
                 m_Detained++;
                 FlashBeacon();
                 car.Impound();
+                StartCoroutine(RaiseBarrier(open: true));
             }
 
             if (breathalyzer != null)
@@ -449,13 +500,13 @@ namespace DPS
             {
                 car.Release();
 
-                // Wait for the car to clear the arm before dropping it again.
+                // Keep the shift alive until the car clears the arm; the barrier stays open
+                // so the next car can flow through unless it is waved down.
                 const float clearOfBarrierZ = 7f;
                 while (car != null && car.transform.position.z < clearOfBarrierZ)
                     yield return null;
             }
 
-            yield return RaiseBarrier(open: false);
             m_Releasing--;
         }
 
@@ -464,7 +515,7 @@ namespace DPS
             if (barrierArm == null)
                 yield break;
 
-            var target = open ? m_BarrierHome * Quaternion.AngleAxis(barrierOpenAngle, barrierOpenAxis) : m_BarrierHome;
+            var target = open ? BarrierOpenRotation : m_BarrierHome;
             var start = barrierArm.localRotation;
             var t = 0f;
 
@@ -526,7 +577,7 @@ namespace DPS
             }
 
             if (barrierArm != null)
-                barrierArm.localRotation = m_BarrierHome;
+                barrierArm.localRotation = BarrierOpenRotation;
 
             var result = new ShiftResult
             {
@@ -637,6 +688,9 @@ namespace DPS
         void UpdateStatus()
         {
             if (statusText == null)
+                return;
+
+            if (Time.time < m_HintUntil)
                 return;
 
             var remaining = Mathf.Max(0f, shiftSeconds - (Time.time - m_ShiftStart));

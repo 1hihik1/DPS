@@ -32,8 +32,13 @@ namespace DPS
         [SerializeField] float despawnZ = 40f;
 
         [SerializeField] float approachSpeed = 5.5f;
-        [SerializeField] float brakeDistance = 12f;
         [SerializeField] float leaveSpeed = 9f;
+
+        [Tooltip("A signal is ignored once the car is closer than this to the stop line.")]
+        [SerializeField] float minSignalDistance = 2f;
+
+        [Tooltip("An unsignalled car past stopZ + this counts as missed.")]
+        [SerializeField] float missedZOffset = 4f;
 
         [Header("Visuals")]
         [Tooltip("Container the artists swap meshes inside.")]
@@ -95,6 +100,7 @@ namespace DPS
 
         CarState m_State = CarState.Approaching;
         float m_Speed;
+        float m_BrakeDecel;
         Coroutine m_WindowAnim;
         float m_WaitStartedAt;
         bool m_Honked;
@@ -114,6 +120,9 @@ namespace DPS
 
         /// <summary>Raised when the car reaches the stop line and is ready to inspect.</summary>
         public event System.Action<CarController> Arrived;
+
+        /// <summary>Raised when the car drives past the booth because nobody waved it down.</summary>
+        public event System.Action<CarController> Missed;
 
         void Awake()
         {
@@ -262,37 +271,47 @@ namespace DPS
 
         void UpdateApproaching()
         {
-            var distance = transform.position.z - stopZ;
-
-            // Cars ease down as they near the line even without a signal, so missing the baton
-            // never means a car rockets past the player.
-            var target = distance < brakeDistance
-                ? Mathf.Lerp(approachSpeed, 2.2f, 1f - Mathf.Clamp01(distance / brakeDistance))
-                : approachSpeed;
-
-            m_Speed = Mathf.MoveTowards(m_Speed, target, 4f * Time.deltaTime);
+            // Unsignalled traffic keeps highway speed and drives straight past the booth.
+            m_Speed = Mathf.MoveTowards(m_Speed, approachSpeed, 4f * Time.deltaTime);
             Advance();
 
-            if (transform.position.z >= stopZ - 0.05f)
-                BeginWait();
+            if (transform.position.z < stopZ + missedZOffset)
+                return;
+
+            m_State = CarState.Leaving;
+            Missed?.Invoke(this);
         }
 
-        /// <summary>Called by the baton when the player signals this car down.</summary>
-        public void SignalToStop()
+        /// <summary>
+        /// Called by the baton when the player signals this car down. Returns false when the car
+        /// is already too close to the line to stop smoothly, or is not approaching.
+        /// </summary>
+        public bool SignalToStop()
         {
-            if (m_State == CarState.Approaching)
-                m_State = CarState.Braking;
+            if (m_State != CarState.Approaching)
+                return false;
+
+            var distance = stopZ - transform.position.z;
+            if (distance < minSignalDistance)
+                return false;
+
+            // Constant deceleration that brings the current speed to zero exactly at the line.
+            m_BrakeDecel = Mathf.Max(0.5f, m_Speed * m_Speed / (2f * distance));
+            m_State = CarState.Braking;
+            return true;
         }
 
         void UpdateBraking()
         {
-            var distance = Mathf.Max(0f, transform.position.z - stopZ);
-            var targetSpeed = Mathf.Clamp(distance * 1.4f, 0.4f, approachSpeed);
+            var distance = Mathf.Max(0f, stopZ - transform.position.z);
+            var targetSpeed = Mathf.Min(approachSpeed, Mathf.Sqrt(2f * m_BrakeDecel * distance));
+            m_Speed = Mathf.Max(0.25f, targetSpeed);
 
-            m_Speed = Mathf.MoveTowards(m_Speed, targetSpeed, 9f * Time.deltaTime);
-            Advance();
+            var p = transform.position;
+            p.z = Mathf.Min(stopZ, p.z + m_Speed * Time.deltaTime);
+            transform.position = p;
 
-            if (distance <= 0.06f)
+            if (stopZ - p.z <= 0.01f)
                 BeginWait();
         }
 

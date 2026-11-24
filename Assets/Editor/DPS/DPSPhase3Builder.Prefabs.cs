@@ -48,11 +48,11 @@ namespace DPS.EditorTools
             Box("Tape", v, new Vector3(0f, size.y * 0.5f + 0.001f, 0f), new Vector3(0.06f, 0.002f, size.z + 0.002f), M("CashBand"));
 
             Label("LabelTop", root.transform, new Vector3(0f, size.y * 0.5f + 0.004f, 0f), Face(Vector3.up, Vector3.right),
-                "КОРОБКА", 0.4f, Color.black, new Vector2(0.28f, 0.1f));
+                "КОРОБКА", 0.55f, Color.black, new Vector2(0.33f, 0.14f));
             Label("LabelSide", root.transform, new Vector3(0f, 0f, -size.z * 0.5f - 0.003f), Face(Vector3.back, Vector3.up),
-                "КОРОБКА", 0.4f, Color.black, new Vector2(0.32f, 0.1f));
+                "КОРОБКА", 0.55f, Color.black, new Vector2(0.34f, 0.14f));
             Label("LabelSide2", root.transform, new Vector3(-size.x * 0.5f - 0.003f, 0f, 0f), Face(Vector3.left, Vector3.up),
-                "КОРОБКА", 0.35f, Color.black, new Vector2(0.28f, 0.1f));
+                "КОРОБКА", 0.5f, Color.black, new Vector2(0.29f, 0.14f));
 
             AddBox(root, Vector3.zero, size);
 
@@ -169,7 +169,8 @@ namespace DPS.EditorTools
                 Face(Vector3.left, Vector3.up), new Vector2(1100f, 260f), false);
             UIPanel("Bubble", canvas.transform, Vector2.zero, new Vector2(1100f, 200f), new Color(0.97f, 0.97f, 0.92f, 0.92f));
             var dialogue = UIText("DialogueText", canvas.transform, Vector2.zero, new Vector2(1040f, 190f),
-                "Добрый вечер, командир.", 56f, new Color(0.08f, 0.08f, 0.1f));
+                "Добрый вечер, командир.", 56f, Color.black);
+            dialogue.fontStyle = FontStyles.Bold;
 
             var bribe = UIPanel("BribeBanner", canvas.transform, new Vector2(0f, 175f), new Vector2(900f, 120f), new Color(0.1f, 0.45f, 0.12f, 0.95f));
             UIText("BribeText", bribe.transform, Vector2.zero, new Vector2(880f, 110f),
